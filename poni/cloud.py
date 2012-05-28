@@ -8,6 +8,7 @@ See LICENSE for details.
 from . import errors
 from . import cloud_aws
 from . import cloud_libvirt
+from . import cloud_nova
 from . import cloud_vsphere
 from .cloudbase import Provider # provides backward compatibility with older extensions
 
@@ -15,6 +16,7 @@ from .cloudbase import Provider # provides backward compatibility with older ext
 PROVIDERS = {
     "aws-ec2" : cloud_aws.AwsProvider,
     "libvirt" : cloud_libvirt.LibvirtProvider,
+    "nova" : cloud_nova.NovaProvider,
     "vsphere" : cloud_vsphere.VSphereProvider,
     }
 

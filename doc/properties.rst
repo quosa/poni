@@ -64,7 +64,7 @@ Generic Properties
      - Indicates a system or node only containing templates. Control commands
        are not run under template nodes and implies ``verify=false``.
      - boolean
-     - ``true`` (system/node contains only templates) or ``false`` (regular 
+     - ``true`` (system/node contains only templates) or ``false`` (regular
        system/node, default)
    * - ``deploy``
      - Node access method. Default is ``ssh`` if not defined with this
@@ -113,19 +113,43 @@ Amazon EC2 Properties
      - NO
      - string
      - ``m1.small``, ``m2.xlarge``, etc.
-   * - ``cloud.key-pair``
+   * - ``cloud.key_pair``
      - Name of the EC2 data-center specific key-pair to use **without** the
        ``.pem`` suffix
      - **YES**
      - string
      - ``my-key-pair`` (in case the file you have is ``my-key-pair.pem``)
-   * - ``instance``
+   * - ``cloud.instance``
      - Poni updates the id of the instance here once it has been started
      - n/a
      - string
      - ``i-4692cd2b``
+   * - ``cloud.vm_name``
+     - User-friendly name for the VM, visible in the EC2 console.
+     - **YES**
+     - string
+     - ``cloud-server-01``
+   * - ``cloud.placement``
+     - The availability zone in which to launch the instance.
+     - NO
+     - string
+     - ``us-east-1c``
+   * - ``cloud.placement_group``
+     - Name of the placement group in which the instance will be launched.
+     - NO
+     - string
+     - ``my-group``
+   * - ``cloud.billing``
+     - Instance billing type
+     - NO
+     - string
+     - ``on-demand`` (default) or ``spot``
+   * - ``cloud.spot.max_price``
+     - Spot instance maximum price, required if ``cloud.billing`` is set to ``spot``.
+     - NO
+     - float
+     - ``0.123``
 
 .. note::
-  Many EC2 instance properties cannot be controlled yet, for example: security
-  groups, user data, addressing types, placement groups, monitoring, subnets
-  or block devices.
+  Many EC2 instance properties cannot be controlled yet, for example: user data,
+  addressing types, monitoring, subnets or block devices.
