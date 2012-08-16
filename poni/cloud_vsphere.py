@@ -202,7 +202,7 @@ class VSphereProvider(cloudbase.Provider):
                 else:
                     # Handle the update
                     if vm_state == 'VM_RUNNING':
-                        job = self._update_vm(instance)
+                        job = self.vmops.update_vm(instance)
                 if job:
                     jobs[instance_id] = job
                     tasks[instance_id] = None
@@ -244,31 +244,17 @@ class VSphereProvider(cloudbase.Provider):
 
         return updated_props
 
-    def _update_vm(self, instance):
-        """
-        Get updated info from the VM instance
+    def create_snapshot(self, props, name=None, description=None, memory=False):
+        instances = dict((x['instance'], self._get_instance(x)) for x in props)
+        args = dict(name=name, description=description, memory=memory)
+        self.vmops.run_on_instances(instances, self.vmops.create_snapshot, args)
 
-        This is a generator function which is used in a co-operative
-        multitasking manner. See wait_instances() for an idea on its
-        usage.
+    def revert_to_snapshot(self, props, name=None):
+        instances = dict((x['instance'], self._get_instance(x)) for x in props)
+        args = dict(name=name, wait_for_ip=False)
+        self.vmops.run_on_instances(instances, self.vmops.revert_to_snapshot, args)
 
-        @param instance: dict of the VM instance to update
-
-        @return: generator function
-        """
-        def got_ip(task):
-            return (hasattr(task, 'summary') and
-                    getattr(task.summary.guest, 'ipAddress', None))
-
-        vm_name = instance['vm_name']
-        vm = instance['vm']
-        if not vm:
-            vm = self.vim.find_vm_by_name(vm_name)
-        assert vm, "VM %s not found in vSphere, something is terribly wrong here" % vm_name
-
-        self.log.debug("UPDATE(%s) WAITING FOR IP" % (vm_name))
-        task = vm
-        while not got_ip(task):
-            task = (yield task)
-        self.log.debug("UPDATE(%s) GOT IP: %s" % (vm_name, task.summary.guest.ipAddress))
-        instance['ipv4'] = task.summary.guest.ipAddress
+    def remove_snapshot(self, props, name):
+        instances = dict((x['instance'], self._get_instance(x)) for x in props)
+        args = dict(name=name)
+        self.vmops.run_on_instances(instances, self.vmops.remove_snapshot, args)
