@@ -14,8 +14,8 @@ NOVA_ID = "nova"
 try:
     from novaclient.v1_1 import client as nova_client
     from novaclient import exceptions as nova_exceptions
-    import novaclient.client
     # Debug logging
+    #import novaclient.client
     #ch = logging.StreamHandler()
     #novaclient.client._logger.setLevel(logging.DEBUG)
     #novaclient.client._logger.addHandler(ch)
