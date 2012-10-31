@@ -80,6 +80,10 @@ def _lv_dns_lookup(name, qtype):
             result.append(a["data"])
     return result
 
+def _created_str():
+    return "created by poni.cloud_libvirt by {0}@{1} on {2}+00:00".format(
+        os.getenv("USER"), socket.gethostname(), datetime.datetime.utcnow().isoformat()[0:19])
+
 class LVPError(CloudError):
     """LibvirtProvider error"""
 
@@ -90,7 +94,6 @@ class LibvirtProvider(Provider):
 
         Provider.__init__(self, 'libvirt', cloud_prop)
         self.log = logging.getLogger("poni.libvirt")
-        self.instances = {}
         self.ssh_key = None
         profile = json.load(open(cloud_prop["profile"], "rb"))
         if "ssh_key" in profile:
@@ -149,23 +152,24 @@ class LibvirtProvider(Provider):
     def disconnect(self):
         self.hosts_online = None
 
-    def __get_instance(self, prop):
-        vm_name = instance_id = prop.get('vm_name', None)
-        assert vm_name, "vm_name must be specified for libvirt instances"
-        instance = self.instances.get(instance_id)
-        if not instance:
-            vm_conns = []
-            vm_state = 'VM_NON_EXISTENT'
-            for conn in self.conns():
-                if vm_name in conn.vms:
-                    vm_state = 'VM_DIRTY'
-                    vm_conns.append(conn)
-            instance = dict(id=instance_id,
-                            vm_name=vm_name,
-                            vm_state=vm_state,
-                            vm_conns=vm_conns)
-            self.instances[instance_id] = instance
-        return instance
+    def __get_instances(self, props, non_existent=False):
+        vms = {}
+        for conn in self.conns():
+            conn.refresh()
+            for vm_name in conn.vms:
+                vms.setdefault(vm_name, []).append(conn)
+        props = dict((prop["vm_name"], prop) for prop in props)
+        for vm_name, prop in props.iteritems():
+            if vm_name in vms:
+                yield dict(vm_name=vm_name, vm_state="VM_DIRTY", vm_conns=vms[vm_name], prop=prop)
+            elif non_existent:
+                yield dict(vm_name=vm_name, vm_state="VM_NON_EXISTENT", vm_conns=[], prop=prop)
+
+    def __get_vms(self, props):
+        for instance in self.__get_instances(props):
+            for conn in instance['vm_conns']:
+                self.log.debug("found %r from %r", instance['vm_name'], conn)
+                yield conn.vms[instance['vm_name']]
 
     def init_instance(self, prop):
         """
@@ -173,9 +177,8 @@ class LibvirtProvider(Provider):
 
         Returns node properties that are changed.
         """
-        instance = self.__get_instance(prop)
         out_prop = copy.deepcopy(prop)
-        out_prop["instance"] = instance['id']
+        out_prop["instance"] = prop["vm_name"]
         return dict(cloud=out_prop)
 
     def terminate_instances(self, props):
@@ -183,14 +186,10 @@ class LibvirtProvider(Provider):
         Terminate instances specified in the given sequence of cloud
         properties dicts.
         """
-        for prop in props:
-            instance_id = prop['instance']
-            instance = self.__get_instance(prop)
-            vm_state = instance['vm_state']
-            if vm_state != 'VM_NON_EXISTENT':
-                for conn in instance["vm_conns"]:
-                    self.log.info("deleting %r on %r", instance["vm_name"], conn.host)
-                    conn.delete_vm(instance["vm_name"])
+        for instance in self.__get_instances(props):
+            for conn in instance["vm_conns"]:
+                self.log.info("deleting %r on %r", instance["vm_name"], conn.host)
+                conn.delete_vm(instance["vm_name"])
 
     def wait_instances(self, props, wait_state="running"):
         """
@@ -201,25 +200,24 @@ class LibvirtProvider(Provider):
         """
         assert wait_state == "running", "libvirt only handles running stuff"
         home = os.getenv("HOME")
-        proplist = list(props)
+        # collapse props to one entry per vm_name
+        props = dict((prop["vm_name"], prop) for prop in props).values()
         cloning_start = time.time()
 
         self.log.info("deleting existing VM instances")
-        for prop in proplist:
-            instance = self.__get_instance(prop)
-            if instance["vm_state"] == "VM_DIRTY" and \
-                (prop.get("reinit", True) or len(instance["vm_conns"]) != 1):
-                # Delete any existing instances
+        for instance in self.__get_instances(props):
+            # Delete any existing instances if required to reinit (the
+            # default) or if the same VM was found from multiple hosts.
+            if instance["prop"].get("reinit", True) or len(instance["vm_conns"]) > 1:
                 for conn in instance["vm_conns"]:
                     self.log.info("deleting %r on %r", instance["vm_name"], conn.host)
                     conn.delete_vm(instance["vm_name"])
-                instance["vm_state"] = "VM_NON_EXISTENT"
-                instance["vm_conns"] = []
 
         self.log.info("cloning VM instances")
+        instances = []
         conns = [conn for conn in self.conns() if conn.srv_weight > 0]
-        for prop in proplist:
-            instance = self.__get_instance(prop)
+        for instance in self.__get_instances(props, non_existent=True):
+            prop = instance["prop"]
             ipv6pre = prop.get("ipv6_prefix")
 
             if instance["vm_state"] == "VM_RUNNING":
@@ -252,6 +250,7 @@ class LibvirtProvider(Provider):
             instance["ipproto"] = prop.get("ipproto", "ipv4")
             instance["ipv6"] = vm.ipv6_addr(ipv6pre)[0]
             instance["ssh_key"] = "{0}/.ssh/{1}".format(home, prop["ssh_key"])
+            instances.append(instance)
 
         self.log.info("cloning done: took %.2fs" % (time.time() - cloning_start))
 
@@ -272,7 +271,8 @@ class LibvirtProvider(Provider):
             self.log.info("getting ip addresses: round #%r, time spent=%.02fs", attempt, elapsed)
             failed = []
 
-            for instance_id, instance in self.instances.iteritems():
+            for instance in instances:
+                instance_id = instance["vm_name"]
                 if instance["ipproto"] in instance:
                     # address already exists (ie lookup done or we're using ipv6)
                     if instance_id not in result:
@@ -330,6 +330,41 @@ class LibvirtProvider(Provider):
 
         [client.close() for client in tunnels.itervalues()]
         self.disconnect()
+        return result
+
+    def power_on_instances(self, props):
+        result = {}
+        for vm in self.__get_vms(props):
+            vm.power_on()
+            result[vm.name] = {'power': 'on'}
+        return result
+
+    def power_off_instances(self, props):
+        result = {}
+        for vm in self.__get_vms(props):
+            vm.power_off()
+            result[vm.name] = {'power': 'off'}
+        return result
+
+    def create_snapshot(self, props, name, description=None, memory=False):
+        result = {}
+        for vm in self.__get_vms(props):
+            vm.create_snapshot(name, description, memory)
+            result[vm.name] = {}
+        return result
+
+    def remove_snapshot(self, props, name):
+        result = {}
+        for vm in self.__get_vms(props):
+            vm.remove_snapshot(name)
+            result[vm.name] = {}
+        return result
+
+    def revert_to_snapshot(self, props, name=None):
+        result = {}
+        for vm in self.__get_vms(props):
+            vm.revert_to_snapshot(name)
+            result[vm.name] = {}
         return result
 
 
@@ -411,8 +446,11 @@ class PoniLVConn(object):
         load_w = sum((self.node[k] / float(v or 1)) / self.node[k] for k, v in counters.iteritems())
         return load_w * self.srv_weight
 
-    def connect(self, uri = None):
-        self.conn = libvirt.open(uri or self.uri)
+    def connect(self):
+        self.conn = libvirt.open(self.uri)
+        self.refresh()
+
+    def refresh(self):
         self.refresh_list()
         self.refresh_node()
 
@@ -540,8 +578,7 @@ class PoniLVConn(object):
             self.delete_vm(name)
         spec["name"] = name
         if "desc" not in spec:
-            spec["desc"] = "created by poni.cloud_libvirt by {0}@{1} on {2}+00:00".format(
-                os.getenv("USER"), socket.gethostname(), datetime.datetime.utcnow().isoformat()[0:19])
+            spec["desc"] = _created_str()
         if "uuid" not in spec:
             spec["uuid"] = str(uuid.uuid4())
         if isinstance(spec.get("hardware"), dict):
@@ -731,6 +768,44 @@ class PoniLVPool(object):
         self.path = str(xml.pool.target.path)
 
 
+def convert_lvdom_errors(method):
+    """Convert libvirt domain errors to LVPError"""
+    def wrapper(self, *args, **kw):
+        try:
+            return method(self, *args, **kw)
+        except libvirt.libvirtError as ex:
+            if "domain is already running" in str(ex):
+                err = "vm_online"
+                msg = "vm {0!r} is already running".format(self.name)
+            elif "domain is not running" in str(ex):
+                err = "vm_offline"
+                msg = "vm {0!r} is not running".format(self.name)
+            elif "snapshot not found" in str(ex):
+                err = "snapshot_not_found"
+                msg = "snapshot {0!r} not found for {1!r}".format(args[0], self.name)
+            elif "no snapshot with matching name" in str(ex):
+                err = "snapshot_not_found"
+                msg = "snapshot {0!r} not found for {1!r}".format(args[0], self.name)
+            elif re.search("snapshot file for disk \S+ already exists", str(ex)) or \
+                 re.search("domain snapshot \S+ already exists", str(ex)):
+                err = "snapshot_exists"
+                msg = "snapshot {0!r} already exists for {1!r}".format(args[0], self.name)
+            else:
+                raise
+            if err not in getattr(method, "ignore_lvdom_errors", []):
+                raise LVPError(msg)
+
+    wrapper.__doc__ = method.__doc__
+    wrapper.__name__ = method.__name__
+    return wrapper
+
+def ignore_lvdom_errors(*errs):
+    """Mark various errors to be ignored"""
+    def decorate(method):
+        method.ignore_lvdom_errors = errs
+        return method
+    return decorate
+
 class PoniLVDom(object):
     def __init__(self, conn, dom):
         self.log = logging.getLogger("poni.libvirt.dom")
@@ -766,9 +841,7 @@ class PoniLVDom(object):
 
         # delete snapshots
         for name in self.dom.snapshotListNames(0):
-            self.log.info("Deleting snapshot: %s" % (name,))
-            snapshot = self.dom.snapshotLookupByName(name, 0)
-            snapshot.delete(0)
+            self.remove_snapshot(name)
 
         self.dom.undefine()
 
@@ -783,6 +856,45 @@ class PoniLVDom(object):
         if devs:
             self.macs = [str(iface.mac["address"]) for iface in devs.interface_list]
             self.disks = [str(disk.source.get("file") or disk.source.get("dev")) for disk in devs.disk_list]
+
+    @convert_lvdom_errors
+    @ignore_lvdom_errors("vm_online")
+    def power_on(self):
+        self.log.info("powering on %r", self.name)
+        self.dom.create()
+
+    @convert_lvdom_errors
+    @ignore_lvdom_errors("vm_offline")
+    def power_off(self):
+        self.log.info("powering off %r", self.name)
+        self.dom.destroy()
+
+    @convert_lvdom_errors
+    def create_snapshot(self, name, description=None, memory=False):
+        if not name or "/" in name:
+            raise LVPError("invalid snapshot name {0!r}".format(name))
+        # XXX: libvirt can't (at version 0.9.12) remove disk-only snapshots at all so let's not create them
+        if not memory:
+            raise LVPError("disk-only snapshots are not supported in libvirt vms at the moment")
+        self.log.info("creating %s snapshot %r for %r", "memory" if memory else "disk-only", name, self.name)
+        flags = 0 if memory else libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY
+        self.dom.snapshotCreateXML("""<domainsnapshot>
+                <name>{name}</name>
+                <description>{description}</description>
+            </domainsnapshot>""".format(name=name, description=description or _created_str()), flags)
+
+    @convert_lvdom_errors
+    @ignore_lvdom_errors("snapshot_not_found")
+    def remove_snapshot(self, name):
+        self.log.info("removing snapshot %r from %r", name, self.name)
+        snap = self.dom.snapshotLookupByName(name, 0)
+        snap.delete(0)
+
+    @convert_lvdom_errors
+    def revert_to_snapshot(self, name):
+        self.log.info("reverting %r to %r", name, self.name)
+        snap = self.dom.snapshotLookupByName(name, 0)
+        self.dom.revertToSnapshot(snap, 0)
 
 
 def mac_to_ipv6(prefix, mac):
