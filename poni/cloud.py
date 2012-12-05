@@ -7,12 +7,18 @@ See LICENSE for details.
 """
 from . import errors
 from . import cloud_aws
+from . import cloud_eucalyptus
+from . import cloud_libvirt
+from . import cloud_nova
 from . import cloud_vsphere
 from .cloudbase import Provider # provides backward compatibility with older extensions
 
 
 PROVIDERS = {
     "aws-ec2" : cloud_aws.AwsProvider,
+    "eucalyptus" : cloud_eucalyptus.EucalyptusProvider,
+    "libvirt" : cloud_libvirt.LibvirtProvider,
+    "nova" : cloud_nova.NovaProvider,
     "vsphere" : cloud_vsphere.VSphereProvider,
     }
 
