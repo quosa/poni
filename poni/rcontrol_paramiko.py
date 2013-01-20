@@ -218,7 +218,7 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
                 next_warn = time.time() + self.warn_timeout
                 yield output
 
-            if (exit_code is not None) and channel.eof_received:
+            if (exit_code is not None):
                 yield rcontrol.DONE, exit_code
                 break # everything done!
 
