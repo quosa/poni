@@ -127,7 +127,7 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
             self._ssh.close()
             self._ssh = None
 
-    def get_ssh(self):
+    def get_ssh(self, action=None):
         host = self.node.get("host")
         user = self.node.get("user")
         password = self.node.get("password")
@@ -139,9 +139,6 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
         elif not user:
             raise errors.RemoteError("%s: 'user' property not defined" % (
                 self.node.name))
-
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         if self.key_filename:
             key_file = self.key_filename
@@ -155,32 +152,32 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
                        host, port, user, key_file)
 
         end_time = time.time() + self.connect_timeout
+        ssh = self._ssh
         while time.time() < end_time:
             try:
+                if not ssh:
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    self._ssh = ssh
                 ssh.connect(host, port=port, username=user, key_filename=key_file, password=password)
-                self._ssh = ssh
-                return self._ssh
+                result = action(ssh) if action else ssh
+                return result
             except (socket.error, paramiko.SSHException), error:
                 remaining = max(0, end_time - time.time())
                 self.log.warning("%s: ssh connection to %s failed: %s: %s, "
                                  "retry time remaining=%.0fs" % (
                                  self.node.name, host,
                                  error.__class__.__name__, error, remaining))
-                time.sleep(5)
+                ssh = None
+                self._ssh = None
+                time.sleep(2.5)
 
         raise errors.RemoteError("%s: ssh connect failed: %s: %s" % (
                 self.node.name, error.__class__.__name__, error))
 
     @convert_paramiko_errors
     def execute_command(self, cmd, pseudo_tty=False):
-        channel = None
-        if self._ssh:
-            transport = self._ssh.get_transport()
-            channel = transport.open_session()
-        if not channel:
-            transport = self.get_ssh().get_transport()
-            channel = transport.open_session()
-
+        channel = self.get_ssh(lambda ssh: ssh.get_transport().open_session())
         if not channel:
             raise errors.RemoteError("failed to open an SSH session to %s" % (
                     self.node.name))
@@ -237,11 +234,11 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
 
     @convert_paramiko_errors
     def execute_shell(self):
-        ssh = self._ssh if self._ssh else self.get_ssh()
-        channel = None
+        def invoke_shell(ssh):
+            # TODO: get dimensions from `stty size` or something like that
+            return ssh.invoke_shell(term='vt100', width=80, height=24)
         try:
-            channel = ssh.invoke_shell(term='vt100',
-                                       width=80, height=24) # TODO: dimensions?
+            channel = self.get_ssh(invoke_shell)
             interactive_shell(channel)
         finally:
             if channel:
