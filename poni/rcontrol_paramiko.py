@@ -88,10 +88,7 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
 
     def get_sftp(self):
         if not self._sftp:
-            if self._ssh:
-                self._sftp = self._ssh.open_sftp()
-            if not self._sftp:
-                self._sftp = self.get_ssh().open_sftp()
+            self._sftp = self.get_ssh(lambda ssh: ssh.open_sftp())
         return self._sftp
 
     @convert_paramiko_errors
@@ -153,23 +150,20 @@ class ParamikoRemoteControl(rcontrol.SshRemoteControl):
                        host, port, user, key_file)
 
         end_time = time.time() + self.connect_timeout
-        ssh = self._ssh
         while time.time() < end_time:
             try:
-                if not ssh:
+                if not self._ssh:
                     ssh = paramiko.SSHClient()
                     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    ssh.connect(host, port=port, username=user, key_filename=key_file, password=password)
                     self._ssh = ssh
-                ssh.connect(host, port=port, username=user, key_filename=key_file, password=password)
-                result = action(ssh) if action else ssh
-                return result
+                return action(self._ssh) if action else self._ssh
             except (socket.error, paramiko.SSHException), error:
                 remaining = max(0, end_time - time.time())
                 self.log.warning("%s: ssh connection to %s failed: %s: %s, "
                                  "retry time remaining=%.0fs" % (
                                  self.node.name, host,
                                  error.__class__.__name__, error, remaining))
-                ssh = None
                 self._ssh = None
                 time.sleep(2.5)
 
