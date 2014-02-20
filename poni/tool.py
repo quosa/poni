@@ -815,7 +815,7 @@ class Tool:
             wait_state = arg.state
 
         if wait and nodes:
-            props = [n["cloud"] for n in nodes]
+            props = util.unique_items([n["cloud"] for n in nodes])
             providers = {}
             for cloud_prop in props:
                 provider = self.sky.get_provider(cloud_prop)

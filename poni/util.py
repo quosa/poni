@@ -160,3 +160,11 @@ def path_iter_dict(dict_obj, prefix=None):
 class PropDict(dict):
     def __getattr__(self, name):
         return self.get(name, None)
+
+def unique_items(input_list):
+    """ return unique non-hashable list items """
+    output_list = []
+    for item in input_list:
+        if item not in output_list:
+            output_list.append(item)
+    return output_list
