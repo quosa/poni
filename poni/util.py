@@ -185,3 +185,11 @@ class TaskPool(ThreadPool):
     def wait_all(self):
         self.close()
         self.join()
+
+def unique_items(input_list):
+    """ return unique non-hashable list items """
+    output_list = []
+    for item in input_list:
+        if item not in output_list:
+            output_list.append(item)
+    return output_list
